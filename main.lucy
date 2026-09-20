@@ -1,0 +1,573 @@
+import http
+import data
+import fs
+import system
+#telefog for youuu
+
+class Telefog
+    def initialize(token)
+        self.token = token
+        self.base_url = "https://api.telegram.org/bot" + token + "/"
+        self.debug = false
+    end
+
+    def _new_map()
+        return data.parse("{}")
+    end
+
+    #  keyboard and button builders 
+    # Maps are filled member by member with .set(), never with a mixed literal.
+
+    def button_cb(text, callback_data)
+        tf_m = self._new_map()
+        tf_m.set("text", text)
+        tf_m.set("callback_data", callback_data)
+        return tf_m
+    end
+
+    def button_url(text, url)
+        tf_m = self._new_map()
+        tf_m.set("text", text)
+        tf_m.set("url", url)
+        return tf_m
+    end
+
+    def button_reply(text)
+        tf_m = self._new_map()
+        tf_m.set("text", text)
+        return tf_m
+    end
+
+    def inline_keyboard(buttons_matrix)
+        tf_m = self._new_map()
+        tf_m.set("inline_keyboard", buttons_matrix)
+        return tf_m
+    end
+
+    def reply_keyboard(buttons_matrix, resize = true, one_time = false, input_field_placeholder = "")
+        tf_m = self._new_map()
+        tf_m.set("keyboard", buttons_matrix)
+        tf_m.set("resize_keyboard", resize)
+        tf_m.set("one_time_keyboard", one_time)
+        if input_field_placeholder != ""
+            tf_m.set("input_field_placeholder", input_field_placeholder)
+        end
+        return tf_m
+    end
+
+    def remove_keyboard(selective = false)
+        tf_m = self._new_map()
+        tf_m.set("remove_keyboard", true)
+        tf_m.set("selective", selective)
+        return tf_m
+    end
+
+    # small helpers
+
+    def _kind(v)
+        if v == nil
+            return "nil"
+        end
+        tf_tn = type(v)
+        tf_tn = tf_tn.lower()
+        if tf_tn == "bool" or tf_tn == "boolean"
+            return "bool"
+        end
+        if tf_tn == "int" or tf_tn == "integer"
+            return "int"
+        end
+        if tf_tn == "double" or tf_tn == "float" or tf_tn == "number"
+            return "double"
+        end
+        if tf_tn == "string" or tf_tn == "text" or tf_tn == "str"
+            return "string"
+        end
+        if tf_tn == "array" or tf_tn == "list"
+            return "array"
+        end
+        if tf_tn == "map" or tf_tn == "hash" or tf_tn == "dict" or tf_tn == "object"
+            return "map"
+        end
+        return tf_tn
+    end
+
+    def _hex_value(h)
+        tf_n = h.length()
+        if tf_n == 0
+            return -1
+        end
+        tf_digits = "0123456789abcdef"
+        tf_low = h.lower()
+        tf_val = 0
+        tf_k = 0
+        while tf_k < tf_n
+            tf_c = tf_low[tf_k]
+            tf_d = -1
+            tf_j = 0
+            while tf_j < 16
+                if tf_digits[tf_j] == tf_c
+                    tf_d = tf_j
+                end
+                tf_j = tf_j + 1
+            end
+            if tf_d < 0
+                return -1
+            end
+            tf_val = (tf_val << 4) + tf_d
+            tf_k = tf_k + 1
+        end
+        return tf_val
+    end
+
+    def _hex_upper(n)
+        if n == 0
+            return "0"
+        end
+        tf_digits = "0123456789ABCDEF"
+        tf_out = ""
+        tf_v = n
+        while tf_v > 0
+            tf_out = tf_digits[tf_v & 15] + tf_out
+            tf_v = tf_v >> 4
+        end
+        return tf_out
+    end
+
+    def _u4(x)
+        tf_digits = "0123456789abcdef"
+        return tf_digits[(x >> 12) & 15] + tf_digits[(x >> 8) & 15] + tf_digits[(x >> 4) & 15] + tf_digits[x & 15]
+    end
+
+    # JSON encoder
+
+    def _json_escape(s)
+        if s == nil
+            return ""
+        end
+        if not (s.contains("\"") or s.contains("\\") or s.contains("\n") or s.contains("\r") or s.contains("\t") or s.contains("[[u+"))
+            return s
+        end
+        tf_out = ""
+        tf_i = 0
+        tf_n = s.length()
+        while tf_i < tf_n
+            tf_ch = s[tf_i]
+            if tf_ch == "\""
+                tf_out = tf_out + "\\\""
+                tf_i = tf_i + 1
+                continue
+            end
+            if tf_ch == "\\"
+                tf_out = tf_out + "\\\\"
+                tf_i = tf_i + 1
+                continue
+            end
+            if tf_ch == "\n"
+                tf_out = tf_out + "\\n"
+                tf_i = tf_i + 1
+                continue
+            end
+            if tf_ch == "\r"
+                tf_out = tf_out + "\\r"
+                tf_i = tf_i + 1
+                continue
+            end
+            if tf_ch == "\t"
+                tf_out = tf_out + "\\t"
+                tf_i = tf_i + 1
+                continue
+            end
+            if tf_ch == "["
+                if tf_i + 4 < tf_n
+                    if s[tf_i + 1] == "[" and s[tf_i + 2] == "u" and s[tf_i + 3] == "+"
+                        tf_j = tf_i + 4
+                        tf_hex = ""
+                        while tf_j < tf_n and s[tf_j] != "]" and tf_hex.length() < 6
+                            tf_hex = tf_hex + s[tf_j]
+                            tf_j = tf_j + 1
+                        end
+                        tf_cp = self._hex_value(tf_hex)
+                        if tf_cp >= 65536 and tf_cp <= 1114111 and tf_j + 1 < tf_n
+                            if s[tf_j] == "]" and s[tf_j + 1] == "]"
+                                tf_v = tf_cp - 65536
+                                tf_out = tf_out + "\\u" + self._u4(55296 + (tf_v >> 10)) + "\\u" + self._u4(56320 + (tf_v & 1023))
+                                tf_i = tf_j + 2
+                                continue
+                            end
+                        end
+                    end
+                end
+            end
+            tf_out = tf_out + tf_ch
+            tf_i = tf_i + 1
+        end
+        return tf_out
+    end
+
+    def _json_encode(value)
+        if value == nil
+            return "null"
+        end
+        tf_k = self._kind(value)
+        if tf_k == "bool"
+            if value == true
+                return "true"
+            end
+            return "false"
+        end
+        if tf_k == "int"
+            return str(value)
+        end
+        if tf_k == "double"
+            tf_iv = int(value)
+            if tf_iv == value
+                return str(tf_iv)
+            end
+            return str(value)
+        end
+        if tf_k == "string"
+            return "\"" + self._json_escape(value) + "\""
+        end
+        if tf_k == "array"
+            tf_parts = []
+            tf_i = 0
+            tf_n = value.length()
+            while tf_i < tf_n
+                tf_parts.push(self._json_encode(value[tf_i]))
+                tf_i = tf_i + 1
+            end
+            return "[" + tf_parts.join(",") + "]"
+        end
+        if tf_k == "map"
+            tf_parts = []
+            tf_keys = value.keys()
+            tf_i = 0
+            tf_n = tf_keys.length()
+            while tf_i < tf_n
+                tf_key = tf_keys[tf_i]
+                tf_parts.push("\"" + self._json_escape(tf_key) + "\":" + self._json_encode(value[tf_key]))
+                tf_i = tf_i + 1
+            end
+            return "{" + tf_parts.join(",") + "}"
+        end
+        return "\"" + self._json_escape(str(value)) + "\""
+    end
+
+    # Appends one  "key":value  pair to a body that starts with "{".
+    def _add(body, key, encoded)
+        if body == "{"
+            return body + "\"" + key + "\":" + encoded
+        end
+        return body + ",\"" + key + "\":" + encoded
+    end
+
+    def _pair(body, key, value)
+        return self._add(body, key, self._json_encode(value))
+    end
+
+    def _fix_surrogates(s)
+        tf_low = s.lower()
+        if not tf_low.contains("\\ud")
+            return s
+        end
+        tf_n = s.length()
+        tf_parts = []
+        tf_i = 0
+        while tf_i < tf_n
+            tf_ch = s[tf_i]
+            if tf_ch == "\\" and tf_i + 1 < tf_n
+                tf_nx = s[tf_i + 1]
+                if tf_nx == "u" and tf_i + 11 < tf_n
+                    tf_hi = self._hex_value(s[tf_i + 2] + s[tf_i + 3] + s[tf_i + 4] + s[tf_i + 5])
+                    if tf_hi >= 55296 and tf_hi <= 56319
+                        if s[tf_i + 6] == "\\" and s[tf_i + 7] == "u"
+                            tf_lo = self._hex_value(s[tf_i + 8] + s[tf_i + 9] + s[tf_i + 10] + s[tf_i + 11])
+                            if tf_lo >= 56320 and tf_lo <= 57343
+                                tf_cp = 65536 + ((tf_hi - 55296) << 10) + (tf_lo - 56320)
+                                tf_parts.push("[[u+" + self._hex_upper(tf_cp) + "]]")
+                                tf_i = tf_i + 12
+                                continue
+                            end
+                        end
+                    end
+                end
+                tf_parts.push(tf_ch)
+                tf_parts.push(tf_nx)
+                tf_i = tf_i + 2
+                continue
+            end
+            tf_parts.push(tf_ch)
+            tf_i = tf_i + 1
+        end
+        return tf_parts.join("")
+    end
+
+    def _parse_response(raw)
+        tf_fixed = raw
+        try
+            tf_fixed = self._fix_surrogates(raw)
+        catch Exception as tf_err
+            tf_fixed = raw
+        end
+        tf_res = nil
+        try
+            tf_res = data.parse(tf_fixed)
+        catch Exception as tf_err2
+            tf_res = nil
+        end
+        if tf_res == nil and tf_fixed != raw
+            tf_res = data.parse(raw)
+        end
+        return tf_res
+    end
+
+    # core request
+
+    def _transport(url, body)
+        if system.command_exists("curl") != true
+            tf_r = http.post(url, body)
+            if tf_r == nil
+                return nil
+            end
+            return [tf_r.status, tf_r.body]
+        end
+        tf_path = system.temp_dir() + "/telefog_" + str(system.pid()) + ".json"
+        tf_out = nil
+        try
+            fs.write(tf_path, body)
+            tf_cmd = "curl -s --max-time 90 -X POST -H 'Content-Type: application/json' --data-binary @'" + tf_path + "' -w '\\n__TFSTATUS__%{http_code}' '" + url + "'"
+            tf_out = system.capture(tf_cmd)
+        catch Exception as tf_err
+            print "[Telefog Error] curl transport failed: " + str(tf_err)
+            tf_out = nil
+        end
+        try
+            fs.remove(tf_path)
+        catch Exception as tf_err2
+            tf_path = tf_path
+        end
+        if tf_out == nil
+            return nil
+        end
+        tf_parts = tf_out.split("__TFSTATUS__")
+        if tf_parts.length() < 2
+            return nil
+        end
+        tf_status = 0
+        try
+            tf_status = tf_parts[1].strip().to_int()
+        catch Exception as tf_err3
+            tf_status = 0
+        end
+        return [tf_status, tf_parts[0].strip()]
+    end
+
+    def call_api(method_name, payload = nil)
+        tf_url = self.base_url + method_name
+        tf_body = "{}"
+        if payload != nil
+            if self._kind(payload) == "string"
+                tf_body = payload
+            else
+                tf_body = self._json_encode(payload)
+            end
+        end
+        if self.debug == true
+            print "[Telefog Debug] " + method_name + " <- " + tf_body
+        end
+        tf_resp = self._transport(tf_url, tf_body)
+        if tf_resp == nil
+            print "[Telefog Error] " + method_name + " -> no response received (network/proxy connection failed)."
+            return nil
+        end
+        tf_status = tf_resp[0]
+        tf_raw = tf_resp[1]
+        if tf_status != 200
+            print "[Telefog Warning] " + method_name + " -> HTTP status " + tf_status
+        end
+        if tf_raw == nil or tf_raw == ""
+            print "[Telefog Error] " + method_name + " -> empty response body."
+            return nil
+        end
+        if tf_raw[0] != "{"
+            print "[Telefog Warning] Network/Proxy Error - Non-JSON response received for " + method_name + "."
+            return nil
+        end
+        tf_result = self._parse_response(tf_raw)
+        if tf_result != nil and tf_result.ok != true
+            print "[Telefog Error] " + method_name + " failed (" + tf_result.error_code + "): " + tf_result.description
+            tf_shown = tf_body
+            if tf_shown.length() > 600
+                tf_shown = tf_shown.slice(0, 600)
+            end
+            print "[Telefog Debug] request body was: " + tf_shown
+        end
+        return tf_result
+    end
+
+    # Telegram methods :)
+
+    def get_updates(offset = 0, timeout = 30, limit = 100, allowed_updates = nil)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "offset", offset)
+        tf_b = self._pair(tf_b, "limit", limit)
+        tf_b = self._pair(tf_b, "timeout", timeout)
+        if allowed_updates != nil
+            tf_b = self._pair(tf_b, "allowed_updates", allowed_updates)
+        end
+        return self.call_api("getUpdates", tf_b + "}")
+    end
+
+    def set_webhook(url, secret_token = "", max_connections = 40)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "url", url)
+        tf_b = self._pair(tf_b, "max_connections", max_connections)
+        if secret_token != ""
+            tf_b = self._pair(tf_b, "secret_token", secret_token)
+        end
+        return self.call_api("setWebhook", tf_b + "}")
+    end
+
+    def delete_webhook(drop_pending_updates = false)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "drop_pending_updates", drop_pending_updates)
+        return self.call_api("deleteWebhook", tf_b + "}")
+    end
+
+    def get_webhook_info()
+        return self.call_api("getWebhookInfo")
+    end
+
+    def send_message(chat_id, text, parse_mode = "HTML", reply_to_message_id = nil, reply_markup = nil, disable_web_page_preview = false)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "text", text)
+        if parse_mode != nil and parse_mode != ""
+            tf_b = self._pair(tf_b, "parse_mode", parse_mode)
+        end
+        tf_b = self._pair(tf_b, "disable_web_page_preview", disable_web_page_preview)
+        if reply_to_message_id != nil
+            tf_b = self._pair(tf_b, "reply_to_message_id", reply_to_message_id)
+        end
+        if reply_markup != nil
+            tf_b = self._pair(tf_b, "reply_markup", reply_markup)
+        end
+        return self.call_api("sendMessage", tf_b + "}")
+    end
+
+    def forward_message(chat_id, from_chat_id, message_id, protect_content = false)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "from_chat_id", from_chat_id)
+        tf_b = self._pair(tf_b, "message_id", message_id)
+        tf_b = self._pair(tf_b, "protect_content", protect_content)
+        return self.call_api("forwardMessage", tf_b + "}")
+    end
+
+    def copy_message(chat_id, from_chat_id, message_id, caption = "", parse_mode = "HTML", reply_markup = nil)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "from_chat_id", from_chat_id)
+        tf_b = self._pair(tf_b, "message_id", message_id)
+        if caption != ""
+            tf_b = self._pair(tf_b, "caption", caption)
+            if parse_mode != nil and parse_mode != ""
+                tf_b = self._pair(tf_b, "parse_mode", parse_mode)
+            end
+        end
+        if reply_markup != nil
+            tf_b = self._pair(tf_b, "reply_markup", reply_markup)
+        end
+        return self.call_api("copyMessage", tf_b + "}")
+    end
+
+    def send_photo(chat_id, photo, caption = "", parse_mode = "HTML", reply_to_message_id = nil, reply_markup = nil)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "photo", photo)
+        if caption != ""
+            tf_b = self._pair(tf_b, "caption", caption)
+            if parse_mode != nil and parse_mode != ""
+                tf_b = self._pair(tf_b, "parse_mode", parse_mode)
+            end
+        end
+        if reply_to_message_id != nil
+            tf_b = self._pair(tf_b, "reply_to_message_id", reply_to_message_id)
+        end
+        if reply_markup != nil
+            tf_b = self._pair(tf_b, "reply_markup", reply_markup)
+        end
+        return self.call_api("sendPhoto", tf_b + "}")
+    end
+
+    def send_dice(chat_id, emoji = "🎲")
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "emoji", emoji)
+        return self.call_api("sendDice", tf_b + "}")
+    end
+
+    def send_chat_action(chat_id, action)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "action", action)
+        return self.call_api("sendChatAction", tf_b + "}")
+    end
+
+    def edit_message_text(chat_id, message_id, text, parse_mode = "HTML", reply_markup = nil)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "message_id", message_id)
+        tf_b = self._pair(tf_b, "text", text)
+        if parse_mode != nil and parse_mode != ""
+            tf_b = self._pair(tf_b, "parse_mode", parse_mode)
+        end
+        if reply_markup != nil
+            tf_b = self._pair(tf_b, "reply_markup", reply_markup)
+        end
+        return self.call_api("editMessageText", tf_b + "}")
+    end
+
+    def delete_message(chat_id, message_id)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        tf_b = self._pair(tf_b, "message_id", message_id)
+        return self.call_api("deleteMessage", tf_b + "}")
+    end
+
+    def get_chat(chat_id)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        return self.call_api("getChat", tf_b + "}")
+    end
+
+    def get_chat_member_count(chat_id)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "chat_id", chat_id)
+        return self.call_api("getChatMemberCount", tf_b + "}")
+    end
+
+    def answer_callback_query(callback_query_id, text = "", show_alert = false, url = "", cache_time = 0)
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "callback_query_id", callback_query_id)
+        tf_b = self._pair(tf_b, "text", text)
+        tf_b = self._pair(tf_b, "show_alert", show_alert)
+        tf_b = self._pair(tf_b, "cache_time", cache_time)
+        if url != ""
+            tf_b = self._pair(tf_b, "url", url)
+        end
+        return self.call_api("answerCallbackQuery", tf_b + "}")
+    end
+
+    def set_my_commands(commands, scope = nil, language_code = "")
+        tf_b = "{"
+        tf_b = self._pair(tf_b, "commands", commands)
+        if scope != nil
+            tf_b = self._pair(tf_b, "scope", scope)
+        end
+        if language_code != ""
+            tf_b = self._pair(tf_b, "language_code", language_code)
+        end
+        return self.call_api("setMyCommands", tf_b + "}")
+    end
+end

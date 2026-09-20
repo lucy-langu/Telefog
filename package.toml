@@ -1,0 +1,6 @@
+[package]
+name = "telefog"
+version = "1.0.0"
+version-lucy = ">=1.0"
+
+[dependencies]
